@@ -1,26 +1,9 @@
-import importlib
 import random
-import sys
 import time
-from pathlib import Path
-
-
-def import_streamlit():
-    current_dir = str(Path(__file__).resolve().parent)
-    for entry in ("", current_dir):
-        if entry in sys.path:
-            sys.path.remove(entry)
-
-    if "streamlit" in sys.modules:
-        sys.modules.pop("streamlit")
-
-    importlib.invalidate_caches()
-    return importlib.import_module("streamlit")
+import streamlit as st
 
 
 def main():
-    st = import_streamlit()
-
     st.write(
         "Streamlit loves LLMs! 🤖 [Build your own chat app](https://docs.streamlit.io/develop/tutorials/llms/build-conversational-apps) in minutes, then make it powerful by adding images, dataframes, or even input widgets to the chat."
     )
