@@ -10,6 +10,11 @@ try:
 except ImportError:
     OpenAI = None
 
+try:
+    import requests
+except Exception:
+    requests = None
+
 
 def load_dotenv_file(path: str = ".env") -> None:
     env_path = Path(path)
@@ -45,14 +50,46 @@ if OpenAI is not None and API_KEY:
 
 
 def generate_assistant_response(prompt: str) -> str:
+    # Prefer Gemini key + REST call if available (user requested Gemini-only usage)
+    if GEMINI_API_KEY:
+        if requests is None:
+            return "Error: `requests` library is required for Gemini HTTP calls. Install with `pip install requests`."
+
+        url = f"https://generativelanguage.googleapis.com/v1beta2/models/{GEMINI_MODEL}:generateText"
+        params = {"key": GEMINI_API_KEY}
+        payload = {
+            "prompt": {"text": prompt},
+            "temperature": 0.7,
+        }
+
+        try:
+            resp = requests.post(url, params=params, json=payload, timeout=15)
+            resp.raise_for_status()
+            data = resp.json()
+
+            # Try common fields returned by the Generative Language API
+            content = None
+            if isinstance(data, dict):
+                if "candidates" in data and data["candidates"]:
+                    candidate = data["candidates"][0]
+                    content = candidate.get("content") or candidate.get("output")
+                if not content:
+                    content = data.get("output") or data.get("text")
+
+            if content:
+                return content.strip()
+            return f"Gemini API returned unexpected response: {data}"
+        except Exception as exc:
+            return f"Gemini API error: {exc}"
+
+    # Fallback: use OpenAI client if configured
     if OpenAI is None:
         return "Error: openai package not installed. Install with `pip install openai`"
 
     if not API_KEY:
         return (
-            "Error: OPENAI_API_KEY or GEMINI_API_KEY is not set. "
-            "If you have a Gemini-specific key, add GEMINI_API_KEY to your .env file. "
-            "Then restart the app."
+            "Error: OPENAI_API_KEY is not set. "
+            "If you want Gemini-only usage, set GEMINI_API_KEY in your .env."
         )
 
     if openai_client is None:
