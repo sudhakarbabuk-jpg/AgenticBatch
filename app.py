@@ -39,7 +39,7 @@ load_dotenv_file()
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 OPENAI_API_BASE = os.environ.get("OPENAI_API_BASE", "https://api.openai.com/v1")
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-1.5-pro")
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.1-flash-lite")
 
 API_KEY = GEMINI_API_KEY or OPENAI_API_KEY
 API_KEY_SOURCE = "GEMINI_API_KEY" if GEMINI_API_KEY else "OPENAI_API_KEY" if OPENAI_API_KEY else None
@@ -55,32 +55,49 @@ def generate_assistant_response(prompt: str) -> str:
         if requests is None:
             return "Error: `requests` library is required for Gemini HTTP calls. Install with `pip install requests`."
 
-        url = f"https://generativelanguage.googleapis.com/v1beta2/models/{GEMINI_MODEL}:generateText"
+        # Some Gemini models use different RPC names; try both common endpoints.
         params = {"key": GEMINI_API_KEY}
-        payload = {
-            "prompt": {"text": prompt},
-            "temperature": 0.7,
-        }
+        payload = {"prompt": {"text": prompt}, "temperature": 0.7}
 
-        try:
-            resp = requests.post(url, params=params, json=payload, timeout=15)
-            resp.raise_for_status()
-            data = resp.json()
+        endpoints = [
+            f"https://generativelanguage.googleapis.com/v1/models/{GEMINI_MODEL}:generateText",
+            f"https://generativelanguage.googleapis.com/v1/models/{GEMINI_MODEL}:generateContent",
+        ]
 
-            # Try common fields returned by the Generative Language API
-            content = None
-            if isinstance(data, dict):
-                if "candidates" in data and data["candidates"]:
-                    candidate = data["candidates"][0]
-                    content = candidate.get("content") or candidate.get("output")
-                if not content:
-                    content = data.get("output") or data.get("text")
+        last_err = None
+        for url in endpoints:
+            try:
+                resp = requests.post(url, params=params, json=payload, timeout=15)
+                if resp.status_code == 404:
+                    last_err = f"404 from {url}"
+                    continue
+                resp.raise_for_status()
+                data = resp.json()
 
-            if content:
-                return content.strip()
-            return f"Gemini API returned unexpected response: {data}"
-        except Exception as exc:
-            return f"Gemini API error: {exc}"
+                # Try common fields returned by the Generative Language API
+                content = None
+                if isinstance(data, dict):
+                    if "candidates" in data and data["candidates"]:
+                        candidate = data["candidates"][0]
+                        # candidate may have 'content' or 'output' or 'content[0].text'
+                        content = candidate.get("content") or candidate.get("output")
+                        if not content and isinstance(candidate.get("content"), list):
+                            # look for nested text
+                            for item in candidate.get("content"):
+                                if isinstance(item, dict) and item.get("text"):
+                                    content = item.get("text")
+                                    break
+                    if not content:
+                        content = data.get("output") or data.get("text")
+
+                if content:
+                    return content.strip()
+                return f"Gemini API returned unexpected response: {data}"
+            except Exception as exc:
+                last_err = str(exc)
+                continue
+
+        return f"Gemini API error: {last_err}"
 
     # Fallback: use OpenAI client if configured
     if OpenAI is None:
