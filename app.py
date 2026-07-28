@@ -1,6 +1,59 @@
+import os
 import random
 import time
 import streamlit as st
+
+from dotenv import load_dotenv
+
+try:
+    from openai import OpenAI
+except ImportError:
+    OpenAI = None
+
+load_dotenv()
+
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+OPENAI_API_BASE = os.environ.get("OPENAI_API_BASE", "https://api.openai.com/v1")
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-1.5-pro")
+
+API_KEY = GEMINI_API_KEY or OPENAI_API_KEY
+API_KEY_SOURCE = "GEMINI_API_KEY" if GEMINI_API_KEY else "OPENAI_API_KEY" if OPENAI_API_KEY else None
+
+openai_client = None
+if OpenAI is not None and API_KEY:
+    openai_client = OpenAI(api_key=API_KEY, base_url=OPENAI_API_BASE)
+
+
+def generate_assistant_response(prompt: str) -> str:
+    if OpenAI is None:
+        return "Error: openai package not installed. Install with `pip install openai`"
+
+    if not API_KEY:
+        return (
+            "Error: OPENAI_API_KEY or GEMINI_API_KEY is not set. "
+            "If you have a Gemini-specific key, add GEMINI_API_KEY to your .env file. "
+            "Then restart the app."
+        )
+
+    if openai_client is None:
+        return (
+            "Error: Could not initialize OpenAI client. "
+            "Check your openai package version and OPENAI_API_BASE settings."
+        )
+
+    try:
+        response = openai_client.chat.completions.create(
+            model=GEMINI_MODEL,
+            messages=[
+                {"role": "system", "content": "You are a helpful assistant."},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.7,
+        )
+        return response.choices[0].message.content.strip()
+    except Exception as exc:
+        return f"OpenAI API error: {exc}"
 
 
 def main():
@@ -8,44 +61,33 @@ def main():
         "Streamlit loves LLMs! 🤖 [Build your own chat app](https://docs.streamlit.io/develop/tutorials/llms/build-conversational-apps) in minutes, then make it powerful by adding images, dataframes, or even input widgets to the chat."
     )
 
-    st.caption("Note that this demo app isn't actually connected to any LLMs. Those are expensive ;)")
+    st.caption(
+        "This app uses a Gemini model via the OpenAI API. "
+        f"Reading API key from `{API_KEY_SOURCE or 'none'}`."
+    )
 
-    # Initialize chat history
     if "messages" not in st.session_state:
         st.session_state.messages = [{"role": "assistant", "content": "Let's start chatting! 👇"}]
 
-    # Display chat messages from history on app rerun
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
 
-    # Accept user input
     if prompt := st.chat_input("What is up?"):
-        # Add user message to chat history
         st.session_state.messages.append({"role": "user", "content": prompt})
-        # Display user message in chat message container
         with st.chat_message("user"):
             st.markdown(prompt)
 
-        # Display assistant response in chat message container
         with st.chat_message("assistant"):
             message_placeholder = st.empty()
+            assistant_response = generate_assistant_response(prompt)
             full_response = ""
-            assistant_response = random.choice(
-                [
-                    "Hello there! How can I assist you today?",
-                    "Hi, human! Is there anything I can help you with?",
-                    "Do you need help?",
-                ]
-            )
-            # Simulate stream of response with milliseconds delay
             for chunk in assistant_response.split():
                 full_response += chunk + " "
                 time.sleep(0.05)
-                # Add a blinking cursor to simulate typing
                 message_placeholder.markdown(full_response + "▌")
             message_placeholder.markdown(full_response)
-        # Add assistant response to chat history
+
         st.session_state.messages.append({"role": "assistant", "content": full_response})
 
 
