@@ -1,32 +1,28 @@
 import os
-import random
 import time
 from pathlib import Path
 
+import requests
 import streamlit as st
 
-try:
-    from openai import OpenAI
-except ImportError:
-    OpenAI = None
 
-try:
-    import requests
-except Exception:
-    requests = None
-
-
+# ---------------------------------------------------------
+# Load environment variables from .env
+# ---------------------------------------------------------
 def load_dotenv_file(path: str = ".env") -> None:
     env_path = Path(path)
+
     if not env_path.is_file():
         return
 
     for raw_line in env_path.read_text(encoding="utf-8").splitlines():
         line = raw_line.strip()
+
         if not line or line.startswith("#") or "=" not in line:
             continue
 
         key, value = line.split("=", 1)
+
         key = key.strip()
         value = value.strip().strip('"').strip("'")
 
@@ -34,135 +30,244 @@ def load_dotenv_file(path: str = ".env") -> None:
             os.environ[key] = value
 
 
+# Load .env file
 load_dotenv_file()
 
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
+
+# ---------------------------------------------------------
+# Gemini Configuration
+# ---------------------------------------------------------
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-OPENAI_API_BASE = os.environ.get("OPENAI_API_BASE", "https://api.openai.com/v1")
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.1-flash-lite")
 
-API_KEY = GEMINI_API_KEY or OPENAI_API_KEY
-API_KEY_SOURCE = "GEMINI_API_KEY" if GEMINI_API_KEY else "OPENAI_API_KEY" if OPENAI_API_KEY else None
-
-openai_client = None
-if OpenAI is not None and API_KEY:
-    openai_client = OpenAI(api_key=API_KEY, base_url=OPENAI_API_BASE)
+GEMINI_MODEL = "gemini-3.6-flash"
 
 
+# ---------------------------------------------------------
+# Gemini API
+# ---------------------------------------------------------
 def generate_assistant_response(prompt: str) -> str:
-    # Prefer Gemini key + REST call if available (user requested Gemini-only usage)
-    if GEMINI_API_KEY:
-        if requests is None:
-            return "Error: `requests` library is required for Gemini HTTP calls. Install with `pip install requests`."
 
-        # Some Gemini models use different RPC names; try both common endpoints.
-        params = {"key": GEMINI_API_KEY}
-        payload = {"prompt": {"text": prompt}, "temperature": 0.7}
-
-        endpoints = [
-            f"https://generativelanguage.googleapis.com/v1/models/{GEMINI_MODEL}:generateText",
-            f"https://generativelanguage.googleapis.com/v1/models/{GEMINI_MODEL}:generateContent",
-        ]
-
-        last_err = None
-        for url in endpoints:
-            try:
-                resp = requests.post(url, params=params, json=payload, timeout=15)
-                if resp.status_code == 404:
-                    last_err = f"404 from {url}"
-                    continue
-                resp.raise_for_status()
-                data = resp.json()
-
-                # Try common fields returned by the Generative Language API
-                content = None
-                if isinstance(data, dict):
-                    if "candidates" in data and data["candidates"]:
-                        candidate = data["candidates"][0]
-                        # candidate may have 'content' or 'output' or 'content[0].text'
-                        content = candidate.get("content") or candidate.get("output")
-                        if not content and isinstance(candidate.get("content"), list):
-                            # look for nested text
-                            for item in candidate.get("content"):
-                                if isinstance(item, dict) and item.get("text"):
-                                    content = item.get("text")
-                                    break
-                    if not content:
-                        content = data.get("output") or data.get("text")
-
-                if content:
-                    return content.strip()
-                return f"Gemini API returned unexpected response: {data}"
-            except Exception as exc:
-                last_err = str(exc)
-                continue
-
-        return f"Gemini API error: {last_err}"
-
-    # Fallback: use OpenAI client if configured
-    if OpenAI is None:
-        return "Error: openai package not installed. Install with `pip install openai`"
-
-    if not API_KEY:
+    if not GEMINI_API_KEY:
         return (
-            "Error: OPENAI_API_KEY is not set. "
-            "If you want Gemini-only usage, set GEMINI_API_KEY in your .env."
+            "Error: GEMINI_API_KEY is not configured.\n\n"
+            "Add GEMINI_API_KEY to your .env file."
         )
 
-    if openai_client is None:
-        return (
-            "Error: Could not initialize OpenAI client. "
-            "Check your openai package version and OPENAI_API_BASE settings."
-        )
+    # Remove "models/" if accidentally provided in .env
+    model_name = GEMINI_MODEL.removeprefix("models/")
+
+    url = (
+        "https://generativelanguage.googleapis.com/v1beta/"
+        f"models/{model_name}:generateContent"
+    )
+
+    headers = {
+        "x-goog-api-key": GEMINI_API_KEY,
+        "Content-Type": "application/json",
+    }
+
+    payload = {
+        "contents": [
+            {
+                "role": "user",
+                "parts": [
+                    {
+                        "text": prompt
+                    }
+                ],
+            }
+        ],
+        "generationConfig": {
+            "temperature": 0.7,
+            "maxOutputTokens": 2048,
+        },
+    }
 
     try:
-        response = openai_client.chat.completions.create(
-            model=GEMINI_MODEL,
-            messages=[
-                {"role": "system", "content": "You are a helpful assistant."},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.7,
+        response = requests.post(
+            url,
+            headers=headers,
+            json=payload,
+            timeout=60,
         )
-        return response.choices[0].message.content.strip()
+
+        # Handle API errors
+        if not response.ok:
+            try:
+                error_data = response.json()
+
+                error_message = (
+                    error_data
+                    .get("error", {})
+                    .get("message", response.text)
+                )
+
+            except Exception:
+                error_message = response.text
+
+            return (
+                f"Gemini API error ({response.status_code}): "
+                f"{error_message}"
+            )
+
+        data = response.json()
+
+        # -------------------------------------------------
+        # Extract response
+        # -------------------------------------------------
+        candidates = data.get("candidates", [])
+
+        if not candidates:
+            return (
+                "Gemini did not return a response.\n\n"
+                f"API response: {data}"
+            )
+
+        content = candidates[0].get("content", {})
+
+        parts = content.get("parts", [])
+
+        text_parts = [
+            part.get("text", "")
+            for part in parts
+            if part.get("text")
+        ]
+
+        if not text_parts:
+            return (
+                "Gemini returned a response but no text "
+                "was available."
+            )
+
+        return "".join(text_parts).strip()
+
+    except requests.exceptions.Timeout:
+        return (
+            "Gemini API error: Request timed out. "
+            "Please try again."
+        )
+
+    except requests.exceptions.ConnectionError:
+        return (
+            "Gemini API error: Unable to connect to "
+            "Google Gemini API."
+        )
+
+    except requests.exceptions.RequestException as exc:
+        return f"Gemini API request failed: {exc}"
+
     except Exception as exc:
-        return f"OpenAI API error: {exc}"
+        return f"Unexpected error: {exc}"
 
 
+# ---------------------------------------------------------
+# Streamlit Application
+# ---------------------------------------------------------
 def main():
-    st.write(
-        "Streamlit loves LLMs! 🤖 [Build your own chat app](https://docs.streamlit.io/develop/tutorials/llms/build-conversational-apps) in minutes, then make it powerful by adding images, dataframes, or even input widgets to the chat."
+
+    st.set_page_config(
+        page_title="Gemini Chat",
+        page_icon="🤖",
     )
+
+    st.title("Gemini Chat 🤖")
 
     st.caption(
-        "This app uses a Gemini model via the OpenAI API. "
-        f"Reading API key from `{API_KEY_SOURCE or 'none'}`."
+        f"Powered by Google Gemini • Model: {GEMINI_MODEL}"
     )
 
-    if "messages" not in st.session_state:
-        st.session_state.messages = [{"role": "assistant", "content": "Let's start chatting! 👇"}]
+    # -----------------------------------------------------
+    # Validate API key
+    # -----------------------------------------------------
+    if not GEMINI_API_KEY:
+        st.error(
+            "GEMINI_API_KEY is not configured. "
+            "Please add it to your .env file."
+        )
+        st.stop()
 
+    # -----------------------------------------------------
+    # Initialize chat history
+    # -----------------------------------------------------
+    if "messages" not in st.session_state:
+        st.session_state.messages = [
+            {
+                "role": "assistant",
+                "content": "Hi! How can I help you today? 👋",
+            }
+        ]
+
+    # -----------------------------------------------------
+    # Display previous messages
+    # -----------------------------------------------------
     for message in st.session_state.messages:
+
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
 
-    if prompt := st.chat_input("What is up?"):
-        st.session_state.messages.append({"role": "user", "content": prompt})
+    # -----------------------------------------------------
+    # User input
+    # -----------------------------------------------------
+    prompt = st.chat_input("Ask me anything...")
+
+    if prompt:
+
+        # Save user message
+        st.session_state.messages.append(
+            {
+                "role": "user",
+                "content": prompt,
+            }
+        )
+
+        # Display user message
         with st.chat_message("user"):
             st.markdown(prompt)
 
+        # -------------------------------------------------
+        # Generate Gemini response
+        # -------------------------------------------------
         with st.chat_message("assistant"):
+
             message_placeholder = st.empty()
-            assistant_response = generate_assistant_response(prompt)
+
+            with st.spinner("Thinking..."):
+                assistant_response = (
+                    generate_assistant_response(prompt)
+                )
+
+            # -------------------------------------------------
+            # Streaming-style display
+            # -------------------------------------------------
             full_response = ""
-            for chunk in assistant_response.split():
-                full_response += chunk + " "
-                time.sleep(0.05)
-                message_placeholder.markdown(full_response + "▌")
+
+            for word in assistant_response.split():
+
+                full_response += word + " "
+
+                message_placeholder.markdown(
+                    full_response + "▌"
+                )
+
+                time.sleep(0.02)
+
+            full_response = full_response.strip()
+
             message_placeholder.markdown(full_response)
 
-        st.session_state.messages.append({"role": "assistant", "content": full_response})
+        # -------------------------------------------------
+        # Save assistant response
+        # -------------------------------------------------
+        st.session_state.messages.append(
+            {
+                "role": "assistant",
+                "content": full_response,
+            }
+        )
 
 
+# ---------------------------------------------------------
+# Run application
+# ---------------------------------------------------------
 if __name__ == "__main__":
     main()
