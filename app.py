@@ -9,25 +9,51 @@ import streamlit as st
 # ---------------------------------------------------------
 # Load environment variables from .env
 # ---------------------------------------------------------
-def load_dotenv_file(path: str = ".env") -> None:
-    env_path = Path(path)
+def load_dotenv_file(path: str | None = None) -> None:
+    base_dir = Path(__file__).resolve().parent
+    env_paths = []
 
-    if not env_path.is_file():
-        return
+    if path:
+        provided_path = Path(path).expanduser()
+        env_paths.append(
+            provided_path
+            if provided_path.is_absolute()
+            else (base_dir / provided_path)
+        )
 
-    for raw_line in env_path.read_text(encoding="utf-8").splitlines():
-        line = raw_line.strip()
+    env_paths.extend([
+        base_dir / ".env",
+        Path.cwd() / ".env",
+    ])
 
-        if not line or line.startswith("#") or "=" not in line:
+    seen_paths = set()
+
+    for env_path in env_paths:
+        resolved_path = env_path.resolve()
+
+        if resolved_path in seen_paths:
             continue
 
-        key, value = line.split("=", 1)
+        seen_paths.add(resolved_path)
 
-        key = key.strip()
-        value = value.strip().strip('"').strip("'")
+        if not resolved_path.is_file():
+            continue
 
-        if key and key not in os.environ:
-            os.environ[key] = value
+        for raw_line in resolved_path.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+
+            key, value = line.split("=", 1)
+
+            key = key.strip()
+            value = value.strip().strip('"').strip("'")
+
+            if key and key not in os.environ:
+                os.environ[key] = value
+
+        break
 
 
 # Load .env file
