@@ -77,6 +77,7 @@ def ensure_gemini_api_key_in_env() -> None:
 
 ensure_gemini_api_key_in_env()
 
+GEMINI_API_KEY = get_gemini_api_key()
 GEMINI_MODEL = "gemini-3.6-flash"
 
 
