@@ -63,7 +63,19 @@ load_dotenv_file()
 # ---------------------------------------------------------
 # Gemini Configuration
 # ---------------------------------------------------------
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+def get_gemini_api_key() -> str | None:
+    """Resolve the Gemini API key from the environment or Streamlit secrets."""
+    return os.environ.get("GEMINI_API_KEY") or st.secrets.get("GEMINI_API_KEY")
+
+
+def ensure_gemini_api_key_in_env() -> None:
+    """Expose the resolved key in os.environ for downstream code that expects it."""
+    api_key = get_gemini_api_key()
+    if api_key and "GEMINI_API_KEY" not in os.environ:
+        os.environ["GEMINI_API_KEY"] = api_key
+
+
+ensure_gemini_api_key_in_env()
 
 GEMINI_MODEL = "gemini-3.6-flash"
 
